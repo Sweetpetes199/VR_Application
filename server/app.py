@@ -100,6 +100,152 @@ def update_record(session_id, box_id):
     return jsonify({"status": "updated", "record": record}), 200
 
 
+# ── POST /api/results ────────────────────────────────────────────────────────
+@app.route("/api/results", methods=["POST"])
+def receive_ps_result():
+    """
+    Called by device_test.ps1 running ON the equipment being tested.
+    Matches the incoming serial/MAC to a session record, updates PassFail,
+    and reprints the sticker if it hasn't been applied yet.
+
+    Payload (from PowerShell ConvertTo-Json):
+      { SerialNumber, MacAddress, PassFail, Notes, SessionId, Timestamp }
+    """
+    data = request.get_json(force=True)
+    if not data or not data.get("SerialNumber"):
+        return jsonify({"error": "SerialNumber is required"}), 400
+
+    serial    = data["SerialNumber"].strip()
+    mac       = data.get("MacAddress", "").strip().upper()
+    pass_fail = data.get("PassFail", "FAIL").upper()
+    notes     = data.get("Notes", "")
+    hint_sid  = data.get("SessionId", "").strip()  # optional session hint from PS param
+
+    # Search — prefer the hinted session, fall back to all sessions
+    search_order = []
+    if hint_sid and hint_sid in _sessions:
+        search_order = [_sessions[hint_sid]] + [s for sid, s in _sessions.items() if sid != hint_sid]
+    else:
+        search_order = list(_sessions.values())
+
+    matched_record  = None
+    matched_session = None
+
+    for session in search_order:
+        for record in session.get("Records", []):
+            sn_match  = record.get("SerialNumber", "").strip().upper() == serial.upper()
+            mac_match = record.get("MacAddress",   "").strip().upper() == mac
+            if sn_match or (mac and mac_match):
+                matched_record  = record
+                matched_session = session
+                break
+        if matched_record:
+            break
+
+    if not matched_record:
+        print(f"[Results] No match for S/N={serial} MAC={mac}")
+        return jsonify({"error": "No matching record found", "serial": serial}), 404
+
+    # Update the record
+    matched_record["PassFail"] = pass_fail
+    if notes:
+        matched_record["TestNotes"] = notes
+
+    print(f"[Results] {matched_record['BoxId']} → {pass_fail}  (S/N {serial})")
+
+    # Reprint sticker with updated Pass/Fail if it hasn't been physically applied yet
+    if not matched_record.get("StickerApplied", False):
+        job_id = str(uuid.uuid4())[:8].upper()
+        matched_record["PrintJobId"] = job_id
+        queue_print_job(matched_record, job_id)
+        print(f"[Results] Reprint queued for {matched_record['BoxId']} — job {job_id}")
+
+    # Regenerate Excel so the file on disk reflects the latest results
+    sid        = matched_session["SessionId"]
+    excel_path = os.path.join(config.OUTPUT_DIR, f"session_{sid}.xlsx")
+    write_session_excel(matched_session, excel_path)
+
+    return jsonify({
+        "status":    "updated",
+        "SessionId": sid,
+        "BoxId":     matched_record["BoxId"],
+        "PassFail":  pass_fail,
+    }), 200
+
+
+# ── POST /api/results/fallback ────────────────────────────────────────────────
+@app.route("/api/results/fallback", methods=["POST"])
+def import_fallback_csv():
+    """
+    If device_test.ps1 couldn't reach the server during testing, it wrote
+    results to fallback_results.csv.  POST that file here to bulk-import.
+
+    Use curl or PowerShell:
+      curl -X POST http://localhost:5000/api/results/fallback \
+           -F "file=@scripts/fallback_results.csv"
+    """
+    if "file" not in request.files:
+        return jsonify({"error": "No file in request"}), 400
+
+    import csv, io
+    file    = request.files["file"]
+    content = file.read().decode("utf-8-sig")   # strip BOM from PowerShell CSV
+    reader  = csv.DictReader(io.StringIO(content))
+
+    imported = 0
+    skipped  = []
+
+    for row in reader:
+        # Re-use the main result handler logic by faking a request payload
+        serial    = row.get("SerialNumber", "").strip()
+        mac       = row.get("MacAddress",   "").strip().upper()
+        pass_fail = row.get("PassFail",     "FAIL").upper()
+        notes     = row.get("Notes",        "")
+        hint_sid  = row.get("SessionId",    "").strip()
+
+        if not serial:
+            continue
+
+        matched_record  = None
+        matched_session = None
+        search_order    = []
+
+        if hint_sid and hint_sid in _sessions:
+            search_order = [_sessions[hint_sid]] + [s for sid, s in _sessions.items() if sid != hint_sid]
+        else:
+            search_order = list(_sessions.values())
+
+        for session in search_order:
+            for record in session.get("Records", []):
+                if record.get("SerialNumber", "").strip().upper() == serial.upper():
+                    matched_record  = record
+                    matched_session = session
+                    break
+            if matched_record:
+                break
+
+        if not matched_record:
+            skipped.append(serial)
+            continue
+
+        matched_record["PassFail"]  = pass_fail
+        matched_record["TestNotes"] = notes
+
+        if not matched_record.get("StickerApplied", False):
+            job_id = str(uuid.uuid4())[:8].upper()
+            matched_record["PrintJobId"] = job_id
+            queue_print_job(matched_record, job_id)
+
+        sid        = matched_session["SessionId"]
+        excel_path = os.path.join(config.OUTPUT_DIR, f"session_{sid}.xlsx")
+        write_session_excel(matched_session, excel_path)
+
+        imported += 1
+
+    print(f"[Results] Fallback import: {imported} matched, {len(skipped)} skipped")
+    return jsonify({"imported": imported, "skipped": skipped}), 200
+
+
 # ── GET /api/sessions ────────────────────────────────────────────────────────
 @app.route("/api/sessions", methods=["GET"])
 def list_sessions():
