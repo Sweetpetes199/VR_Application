@@ -13,6 +13,7 @@ from excel_writer import write_session_excel
 from print_manager import queue_print_job
 from claude_ocr import extract_device_info
 from claude_result_parser import parse_ps_output
+from crestron_report import write_crestron_excel
 
 app = Flask(__name__)
 CORS(app)  # allow requests from the Quest headset on the same LAN
@@ -22,6 +23,50 @@ _sessions: dict[str, dict] = {}
 
 os.makedirs(config.OUTPUT_DIR,  exist_ok=True)
 os.makedirs(config.STICKER_DIR, exist_ok=True)
+
+
+# ── GET / ────────────────────────────────────────────────────────────────────
+@app.route("/", methods=["GET"])
+def index():
+    """Simple status page — confirms the server is running and lists endpoints."""
+    session_count = len(_sessions)
+    record_count  = sum(len(s.get("Records", [])) for s in _sessions.values())
+
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>QSS Device Intake — Server</title>
+  <style>
+    body {{ font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #e8e8e8; background: #111; }}
+    h1   {{ font-size: 1.3rem; color: #fff; }}
+    .ok  {{ display: inline-block; background: #1a7a1a; color: #7fff7f; padding: 2px 10px; border-radius: 4px; font-size: .85rem; }}
+    table{{ width: 100%; border-collapse: collapse; margin-top: 1.2rem; font-size: .88rem; }}
+    th   {{ text-align: left; color: #aaa; border-bottom: 1px solid #333; padding: 4px 8px; }}
+    td   {{ padding: 5px 8px; border-bottom: 1px solid #222; }}
+    .method {{ color: #7cb8ff; font-family: monospace; }}
+    .path   {{ font-family: monospace; color: #c9d; }}
+    .stat   {{ margin-top: 1rem; color: #aaa; font-size: .85rem; }}
+  </style>
+</head>
+<body>
+  <h1>QSS Device Intake &nbsp;<span class="ok">● running</span></h1>
+  <div class="stat">Sessions in memory: <b>{session_count}</b> &nbsp;|&nbsp; Total records: <b>{record_count}</b></div>
+  <table>
+    <tr><th>Method</th><th>Endpoint</th><th>Called by</th></tr>
+    <tr><td class="method">POST</td><td class="path">/api/sessions</td><td>Goggles — upload scan session</td></tr>
+    <tr><td class="method">GET</td> <td class="path">/api/sessions</td><td>Browser — list sessions</td></tr>
+    <tr><td class="method">GET</td> <td class="path">/api/sessions/&lt;id&gt;/results</td><td>Goggles — fetch Pass/Fail</td></tr>
+    <tr><td class="method">PATCH</td><td class="path">/api/sessions/&lt;id&gt;/records/&lt;box&gt;</td><td>Manual — correct a record</td></tr>
+    <tr><td class="method">POST</td><td class="path">/api/results</td><td>device_test.ps1 — report result</td></tr>
+    <tr><td class="method">POST</td><td class="path">/api/results/fallback</td><td>Manual — import offline CSV</td></tr>
+    <tr><td class="method">POST</td><td class="path">/api/ocr</td><td>Goggles — Claude Vision OCR</td></tr>
+    <tr><td class="method">POST</td><td class="path">/api/parse-result</td><td>device_test.ps1 — Claude verdict</td></tr>
+    <tr><td class="method">POST</td><td class="path">/api/crestron-results</td><td>crestron_runner.ps1 — step-by-step setup result</td></tr>
+  </table>
+</body>
+</html>"""
+    return html, 200
 
 
 # ── POST /api/sessions ───────────────────────────────────────────────────────
@@ -297,6 +342,66 @@ def ocr_image():
     print(f"[OCR] S/N={result.get('serial','?')}  MAC={result.get('mac','?')}  "
           f"confidence={result.get('confidence','?')}")
     return jsonify(result), 200
+
+
+# ── POST /api/crestron-results ───────────────────────────────────────────────
+@app.route("/api/crestron-results", methods=["POST"])
+def receive_crestron_result():
+    """
+    Called by crestron_runner.ps1 after completing all setup steps on a device.
+
+    Payload:
+      {
+        DeviceType, Hostname, SerialNumber, TSID, SessionId,
+        Timestamp, DurationSec, Overall,
+        Steps: [{ Name, Result, Reason, Notes, DurationSec }, ...]
+      }
+
+    Writes / appends to the daily Crestron setup Excel report.
+    If a SessionId is provided and the device serial matches a session record,
+    that record's PassFail is updated so Phase 3 sticker reflects setup status.
+    """
+    data = request.get_json(force=True)
+    if not data or "DeviceType" not in data:
+        return jsonify({"error": "DeviceType is required"}), 400
+
+    # Write Excel report
+    excel_path = write_crestron_excel(data, config.OUTPUT_DIR)
+
+    # Mirror result into the main intake session record (optional)
+    session_id = data.get("SessionId", "").strip()
+    serial     = data.get("SerialNumber", "").strip()
+    overall    = data.get("Overall", "FAIL").upper()
+
+    matched_box = None
+    if session_id and serial and session_id in _sessions:
+        session = _sessions[session_id]
+        for record in session.get("Records", []):
+            if record.get("SerialNumber", "").strip().upper() == serial.upper():
+                record["PassFail"] = overall
+                failed = [s["Name"] for s in data.get("Steps", []) if s.get("Result", "").upper() != "PASS"]
+                if failed:
+                    record["TestNotes"] = "Failed steps: " + "; ".join(failed)
+                matched_box = record.get("BoxId")
+                # Reprint sticker if not yet applied
+                if not record.get("StickerApplied", False):
+                    job_id = str(uuid.uuid4())[:8].upper()
+                    record["PrintJobId"] = job_id
+                    queue_print_job(record, job_id)
+                # Regenerate main session Excel
+                sid_path = os.path.join(config.OUTPUT_DIR, f"session_{session_id}.xlsx")
+                write_session_excel(session, sid_path)
+                break
+
+    print(f"[Crestron] {data.get('DeviceType')} {data.get('Hostname')} → {overall}"
+          f"  ({len(data.get('Steps', []))} steps)  Excel → {excel_path}")
+
+    return jsonify({
+        "status":      "ok",
+        "overall":     overall,
+        "report_path": excel_path,
+        "matched_box": matched_box,
+    }), 201
 
 
 # ── POST /api/parse-result ────────────────────────────────────────────────────

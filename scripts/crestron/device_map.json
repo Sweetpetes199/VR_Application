@@ -1,0 +1,53 @@
+{
+  "_comment": "Maps each Crestron device type to its ordered setup steps. Paths are relative to scripts/crestron/. Point 'script' at your real .ps1 files or leave the stubs and fill them in.",
+
+  "TSW-770": {
+    "label": "TSW-770 Touch Panel",
+    "steps": [
+      { "name": "First Boot, Firmware & Settings", "script": "steps/TSW-770/01-FirstBoot.ps1"       },
+      { "name": "SNMP Configuration",              "script": "steps/TSW-770/02-SNMP.ps1"            },
+      { "name": "Legacy Mode",                     "script": "steps/TSW-770/03-LegacyMode.ps1"      },
+      { "name": "Additional Settings",             "script": "steps/TSW-770/04-AdditionalSettings.ps1" }
+    ]
+  },
+
+  "TST-770": {
+    "label": "TST-770 Touch Panel",
+    "steps": [
+      { "name": "First Boot, Firmware & Settings", "script": "steps/TST-770/01-FirstBoot.ps1"       },
+      { "name": "SNMP Configuration",              "script": "steps/TST-770/02-SNMP.ps1"            },
+      { "name": "Legacy Mode",                     "script": "steps/TST-770/03-LegacyMode.ps1"      },
+      { "name": "Additional Settings",             "script": "steps/TST-770/04-AdditionalSettings.ps1" }
+    ]
+  },
+
+  "TSW-1070": {
+    "label": "TSW-1070 Touch Panel",
+    "steps": [
+      { "name": "First Boot, Firmware & Settings", "script": "steps/TSW-1070/01-FirstBoot.ps1"       },
+      { "name": "SNMP Configuration",              "script": "steps/TSW-1070/02-SNMP.ps1"            },
+      { "name": "Legacy Mode",                     "script": "steps/TSW-1070/03-LegacyMode.ps1"      },
+      { "name": "Additional Settings",             "script": "steps/TSW-1070/04-AdditionalSettings.ps1" }
+    ]
+  },
+
+  "CP4N": {
+    "label": "CP4N Control Processor",
+    "steps": [
+      { "name": "First Boot, Firmware & Settings", "script": "steps/CP4N/01-FirstBoot.ps1"       },
+      { "name": "SNMP Configuration",              "script": "steps/CP4N/02-SNMP.ps1"            },
+      { "name": "Legacy Mode",                     "script": "steps/CP4N/03-LegacyMode.ps1"      },
+      { "name": "Additional Settings",             "script": "steps/CP4N/04-AdditionalSettings.ps1" }
+    ]
+  },
+
+  "CP4": {
+    "label": "CP4 Control Processor",
+    "steps": [
+      { "name": "First Boot, Firmware & Settings", "script": "steps/CP4/01-FirstBoot.ps1"       },
+      { "name": "SNMP Configuration",              "script": "steps/CP4/02-SNMP.ps1"            },
+      { "name": "Legacy Mode",                     "script": "steps/CP4/03-LegacyMode.ps1"      },
+      { "name": "Additional Settings",             "script": "steps/CP4/04-AdditionalSettings.ps1" }
+    ]
+  }
+}
