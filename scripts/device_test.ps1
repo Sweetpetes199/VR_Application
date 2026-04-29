@@ -25,7 +25,8 @@
 
 param(
     [string]$ServerUrl  = "http://192.168.1.100:5000",
-    [string]$SessionId  = ""
+    [string]$SessionId  = "",
+    [switch]$SkipAI     # pass -SkipAI to fall back to the old manual $testPassed flag
 )
 
 Set-StrictMode -Version Latest
@@ -71,33 +72,83 @@ if ([string]::IsNullOrWhiteSpace($serial)) {
 
 Write-Host "`n[QSS] Running device tests..." -ForegroundColor Cyan
 
-$testPassed = $true
-$testNotes  = @()
+# ── Run your test logic; capture ALL output as a string for the AI parser ──
+# Replace the block below with your real checks.
+# You do NOT need to set $testPassed manually — Claude reads the output and
+# decides PASS/FAIL automatically.  If you pass -SkipAI the old manual flag
+# approach is used instead (useful if the server is offline during testing).
 
-try {
+$testOutput = & {
     # ── TODO: replace these stubs with your real checks ──────────────────────
 
     # Example 1 — Ping a critical server
     # $ping = Test-Connection -ComputerName "8.8.8.8" -Count 2 -Quiet
-    # if (-not $ping) { $testPassed = $false; $testNotes += "Network unreachable" }
+    # if ($ping) { Write-Output "PING 8.8.8.8: OK" }
+    # else       { Write-Output "PING 8.8.8.8: FAILED — network unreachable" }
 
     # Example 2 — Check a required service is running
     # $svc = Get-Service -Name "wuauserv" -ErrorAction SilentlyContinue
-    # if ($svc.Status -ne "Running") { $testPassed = $false; $testNotes += "Windows Update service not running" }
+    # if ($svc.Status -eq "Running") { Write-Output "Service wuauserv: Running" }
+    # else { Write-Output "Service wuauserv: NOT running (status: $($svc.Status))" }
 
     # Example 3 — Check available disk space (>10 GB free on C:)
     # $disk = Get-PSDrive C
-    # if ($disk.Free -lt 10GB) { $testPassed = $false; $testNotes += "Low disk space: $([math]::Round($disk.Free/1GB,1)) GB free" }
+    # $freeGB = [math]::Round($disk.Free/1GB,1)
+    # if ($disk.Free -ge 10GB) { Write-Output "Disk C: $freeGB GB free — OK" }
+    # else { Write-Output "Disk C: $freeGB GB free — LOW DISK SPACE" }
 
     # ── Placeholder — remove when you add real checks ─────────────────────────
-    $testNotes += "No tests configured — edit SECTION 2 in device_test.ps1"
+    Write-Output "No tests configured — edit SECTION 2 in device_test.ps1"
 
-} catch {
-    $testPassed = $false
-    $testNotes += "Test exception: $_"
+} 2>&1 | Out-String
+
+Write-Host $testOutput
+
+# ── AI-assisted verdict (default) or manual flag (fallback) ──────────────────
+$testPassed  = $true
+$testNotes   = @()
+
+if (-not $SkipAI) {
+    Write-Host "`n[QSS] Asking Claude to interpret test output..." -ForegroundColor Cyan
+
+    $aiPayload = @{
+        Output       = $testOutput
+        SerialNumber = $serial
+        SessionId    = $SessionId
+    } | ConvertTo-Json
+
+    try {
+        $aiResp = Invoke-RestMethod `
+            -Uri         "$ServerUrl/api/parse-result" `
+            -Method      POST `
+            -Body        $aiPayload `
+            -ContentType "application/json" `
+            -TimeoutSec  30
+
+        $testPassed = ($aiResp.result -eq "PASS")
+        if ($aiResp.reason)  { $testNotes += $aiResp.reason }
+        if ($aiResp.details) { $testNotes += $aiResp.details }
+
+        Write-Host "  Claude verdict: $($aiResp.result)" -ForegroundColor Cyan
+        if ($aiResp.reason) {
+            Write-Host "  Reason: $($aiResp.reason)" -ForegroundColor Cyan
+        }
+
+    } catch {
+        Write-Warning "Could not reach AI parser ($ServerUrl/api/parse-result)."
+        Write-Warning "Falling back to manual flag — check `$testPassed in SECTION 2."
+        Write-Warning "Error: $_"
+        # Keep $testPassed = $true (set above); caller can override with -SkipAI
+        $testNotes += "AI parser unreachable — result may be inaccurate"
+    }
+} else {
+    # ── Manual flag mode (-SkipAI) ────────────────────────────────────────────
+    # Flip $testPassed to $false here if your test logic detected a failure.
+    # $testPassed = $false
+    $testNotes += "AI parsing skipped (-SkipAI flag)"
 }
 
-$passFail   = if ($testPassed) { "PASS" } else { "FAIL" }
+$passFail    = if ($testPassed) { "PASS" } else { "FAIL" }
 $notesJoined = $testNotes -join "; "
 
 # ─────────────────────────────────────────────────────────────────────────────

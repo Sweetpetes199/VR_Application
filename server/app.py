@@ -11,6 +11,8 @@ from flask_cors import CORS
 import os, json, uuid, config
 from excel_writer import write_session_excel
 from print_manager import queue_print_job
+from claude_ocr import extract_device_info
+from claude_result_parser import parse_ps_output
 
 app = Flask(__name__)
 CORS(app)  # allow requests from the Quest headset on the same LAN
@@ -258,6 +260,75 @@ def list_sessions():
         for sid, s in _sessions.items()
     ]
     return jsonify(summary), 200
+
+
+# ── POST /api/ocr ─────────────────────────────────────────────────────────────
+@app.route("/api/ocr", methods=["POST"])
+def ocr_image():
+    """
+    Called by the Meta Quest headset during Phase 1 scanning.
+    Receives a base64-encoded camera frame and returns the extracted
+    serial number and MAC address via Claude Vision.
+
+    Request JSON:
+      { "ImageBase64": "<base64 string>", "MediaType": "image/jpeg" }
+
+    Response JSON:
+      { "serial": "...", "mac": "...", "confidence": "high|medium|low", "raw": "..." }
+      or on error:
+      { "error": "..." }
+    """
+    if not config.ANTHROPIC_API_KEY:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured on server"}), 503
+
+    data = request.get_json(force=True)
+    if not data or "ImageBase64" not in data:
+        return jsonify({"error": "ImageBase64 field is required"}), 400
+
+    image_b64  = data["ImageBase64"]
+    media_type = data.get("MediaType", "image/jpeg")
+
+    result = extract_device_info(image_b64, media_type)
+
+    if "error" in result:
+        print(f"[OCR] Error: {result['error']}")
+        return jsonify(result), 502
+
+    print(f"[OCR] S/N={result.get('serial','?')}  MAC={result.get('mac','?')}  "
+          f"confidence={result.get('confidence','?')}")
+    return jsonify(result), 200
+
+
+# ── POST /api/parse-result ────────────────────────────────────────────────────
+@app.route("/api/parse-result", methods=["POST"])
+def parse_result():
+    """
+    Called by device_test.ps1 after running Section 2 test logic.
+    Receives raw PowerShell stdout and uses Claude to determine
+    PASS or FAIL with a structured reason.
+
+    Request JSON:
+      { "Output": "<raw PS stdout>", "SerialNumber": "...", "SessionId": "..." }
+
+    Response JSON:
+      { "result": "PASS|FAIL", "reason": "...", "details": [...] }
+    """
+    if not config.ANTHROPIC_API_KEY:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured on server"}), 503
+
+    data = request.get_json(force=True)
+    if not data or "Output" not in data:
+        return jsonify({"error": "Output field is required"}), 400
+
+    raw_output = data["Output"]
+    serial     = data.get("SerialNumber", "unknown")
+
+    verdict = parse_ps_output(raw_output)
+
+    print(f"[ParseResult] S/N={serial}  →  {verdict.get('result','?')}  "
+          f"({verdict.get('reason','')[:60]})")
+
+    return jsonify(verdict), 200
 
 
 if __name__ == "__main__":

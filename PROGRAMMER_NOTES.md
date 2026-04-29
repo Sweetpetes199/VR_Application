@@ -111,33 +111,38 @@ ApplyPhaseManager
 
 ---
 
-## 3. OCR — Tuning for Your Labels
+## 3. OCR — Claude Vision (no regex, no plugin)
 
-`OCRScanController.cs` has two regex patterns near the top. Adjust them to match the
-exact format printed on your box labels.
+`OCRScanController.cs` sends each camera frame as a base64 JPEG to the local server
+endpoint `POST /api/ocr`. The server calls **Claude Vision** (`claude-opus-4-7`)
+and returns structured JSON: `{ serial, mac, confidence, raw }`.
 
-```csharp
-// Current patterns — edit as needed:
-private static readonly Regex _serialPattern =
-    new(@"S/N[:\s]*([A-Z0-9\-]{6,30})", RegexOptions.IgnoreCase);
+**No regex patterns, no ML Kit plugin, no Android JNI setup required.**
 
-private static readonly Regex _macPattern =
-    new(@"([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}");
-```
+The server-side logic lives in `server/claude_ocr.py`.
+The system prompt is prompt-cached so repeated calls are cheap.
 
-**Testing OCR patterns without a headset:**
-The controller has an editor stub that fires `SimulateEditorScan()` every 0.5s.
-Paste a sample label string there to test your regex in Play mode on PC.
+**Testing without a headset:**
+In the Unity Editor the controller calls `SimulateEditorScan()` which skips the
+network request entirely and injects a hard-coded serial+MAC. Change those values
+directly in the source to match your label format:
 
 ```csharp
-// In RunOCRFrame(), UNITY_EDITOR path:
-SimulateEditorScan("S/N: YOUR-ACTUAL-LABEL-FORMAT\nMAC: AA:BB:CC:DD:EE:FF");
+// In ScanLoop(), UNITY_EDITOR path:
+yield return StartCoroutine(SimulateEditorScan(
+    "SN-ABC123-XYZ",         // ← your serial format
+    "AA:BB:CC:DD:EE:FF"      // ← your MAC format
+));
 ```
+
+**Server URL:**
+Set `_serverBaseUrl` in the Inspector on `OCRScanController` (same IP as
+`DataSyncManager._serverBaseUrl`).
 
 **Stable-hold timer:**
-OCR must return the same serial+MAC for `_confirmationHoldSeconds` (default 1.5s)
-before firing `OnDeviceConfirmed`. Increase this if you're getting false positives,
-decrease it for faster scanning.
+Claude must return the same serial+MAC for `_confirmationHoldSeconds` (default 1.5s)
+before firing `OnDeviceConfirmed`. Increase if you're getting jitter on worn labels,
+decrease for faster scanning.
 
 ---
 
@@ -176,26 +181,40 @@ sticker is applied. If the app crashes mid-run, the session survives.
 
 ## 6. PowerShell Test Script — Adding Your Tests
 
-Open `scripts/device_test.ps1` and find **SECTION 2**. Everything before and after
-it is infrastructure — only this block needs editing:
+Open `scripts/device_test.ps1` and replace the stubs inside **SECTION 2**.
+Write your checks so they `Write-Output` human-readable lines — **no need to
+manually set `$testPassed`**. Claude reads the captured output and decides
+PASS/FAIL automatically via `POST /api/parse-result` on the server.
 
 ```powershell
-# ── YOUR TEST LOGIC ──────────────────────────────────────────────
-$testPassed = $true    # flip to $false on any failure
-$testNotes  = @()      # add failure reasons here for the Excel report
+# ── SECTION 2 — write your checks as readable output ────────────
+$ping = Test-Connection -ComputerName "192.168.1.1" -Count 2 -Quiet
+if ($ping) { Write-Output "Gateway ping: OK" }
+else       { Write-Output "Gateway ping: FAILED — no network" }
 
-# Call your existing test script:
+$disk = Get-PSDrive C
+$freeGB = [math]::Round($disk.Free/1GB,1)
+Write-Output "Disk C: $freeGB GB free"
+
+# Call your existing test script and let its output flow through:
 # & "C:\Path\To\Your\Existing\test.ps1"
-# if ($LASTEXITCODE -ne 0) { $testPassed = $false; $testNotes += "Test script failed" }
 ```
 
 The script automatically:
 - Reads serial from `Win32_BIOS.SerialNumber`
 - Reads MAC from the first active physical network adapter
-- Formats MAC as `AA:BB:CC:DD:EE:FF`
-- POSTs to `/api/results` on the server
+- Captures all Section 2 output and POSTs it to `/api/parse-result` (Claude)
+- Claude returns `{ result: "PASS"|"FAIL", reason: "...", details: [...] }`
+- POSTs the final result to `/api/results` and triggers sticker reprint
 - Falls back to `fallback_results.csv` if the server is unreachable
 - Prints a large PASS (green) or FAIL (red) banner to the console
+
+**Bypass Claude parsing** (e.g. if the server is offline during testing):
+```powershell
+.\device_test.ps1 -SkipAI
+```
+In `-SkipAI` mode the manual `$testPassed = $true/$false` flag at the bottom of
+Section 2 is used instead.
 
 ---
 

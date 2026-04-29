@@ -120,6 +120,8 @@ Add your test logic to **Section 2** in `device_test.ps1`.
 | `POST` | `/api/results/fallback` | Manual — import offline CSV |
 | `PATCH` | `/api/sessions/<id>/records/<box>` | Manual — correct a record |
 | `GET` | `/api/sessions` | Browser — list all sessions |
+| `POST` | `/api/ocr` | Goggles — Claude Vision OCR on a camera frame |
+| `POST` | `/api/parse-result` | `device_test.ps1` — Claude interprets PS output |
 
 ---
 

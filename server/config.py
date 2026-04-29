@@ -13,3 +13,6 @@ STICKER_DIR  = os.getenv("STICKER_DIR",  "stickers") # ZPL files land here
 
 # Printer — name must match Windows printer queue exactly
 PRINTER_NAME = os.getenv("PRINTER_NAME", "ZDesigner ZD421")
+
+# Claude / Anthropic
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
