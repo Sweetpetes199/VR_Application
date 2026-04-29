@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Flask Intake Server",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["server/app.py"],
+      "port": 5000
+    }
+  ]
+}
